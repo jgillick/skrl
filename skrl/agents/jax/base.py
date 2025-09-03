@@ -5,6 +5,7 @@ import copy
 import datetime
 import os
 import pickle
+from abc import ABC, abstractmethod
 import gymnasium
 
 import flax
@@ -14,57 +15,49 @@ import numpy as np
 from skrl import config, logger
 from skrl.memories.jax import Memory
 from skrl.models.jax import Model
+from skrl.utils.tensorboard import SummaryWriter
 
 
-class Agent:
+class Agent(ABC):
     def __init__(
         self,
-        models: Mapping[str, Model],
-        memory: Optional[Union[Memory, Tuple[Memory]]] = None,
-        observation_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
-        action_space: Optional[Union[int, Tuple[int], gymnasium.Space]] = None,
+        *,
+        models: Optional[Mapping[str, Model]] = None,
+        memory: Optional[Memory] = None,
+        observation_space: Optional[gymnasium.Space] = None,
+        state_space: Optional[gymnasium.Space] = None,
+        action_space: Optional[gymnasium.Space] = None,
         device: Optional[Union[str, jax.Device]] = None,
         cfg: Optional[dict] = None,
     ) -> None:
-        """Base class that represent a RL agent
+        """Base class that represent a RL agent/algorithm.
 
-        :param models: Models used by the agent
-        :type models: dictionary of skrl.models.jax.Model
-        :param memory: Memory to storage the transitions.
-                       If it is a tuple, the first element will be used for training and
-                       for the rest only the environment transitions will be added
-        :type memory: skrl.memory.jax.Memory, list of skrl.memory.jax.Memory or None
-        :param observation_space: Observation/state space or shape (default: ``None``)
-        :type observation_space: int, tuple or list of int, gymnasium.Space or None, optional
-        :param action_space: Action space or shape (default: ``None``)
-        :type action_space: int, tuple or list of int, gymnasium.Space or None, optional
-        :param device: Device on which a tensor/array is or will be allocated (default: ``None``).
-                       If None, the device will be either ``"cuda"`` if available or ``"cpu"``
-        :type device: str or jax.Device, optional
-        :param cfg: Configuration dictionary
-        :type cfg: dict
+        :param models: Agent's models.
+        :param memory: Memory to storage agent's data and environment transitions.
+        :param observation_space: Observation space.
+        :param state_space: State space.
+        :param action_space: Action space.
+        :param device: Data allocation and computation device. If not specified, the default device will be used.
+        :param cfg: Agent's configuration.
         """
         self._jax = config.jax.backend == "jax"
+        self.training = False
 
         self.models = models
+        self.memory = memory
         self.observation_space = observation_space
+        self.state_space = state_space
         self.action_space = action_space
         self.cfg = cfg if cfg is not None else {}
 
         self.device = config.jax.parse_device(device)
-
-        if type(memory) is list:
-            self.memory = memory[0]
-            self.secondary_memories = memory[1:]
-        else:
-            self.memory = memory
-            self.secondary_memories = []
 
         # convert the models to their respective device
         for model in self.models.values():
             if model is not None:
                 pass
 
+        # data tracking
         self.tracking_data = collections.defaultdict(list)
         self.write_interval = self.cfg.get("experiment", {}).get("write_interval", "auto")
 
@@ -72,8 +65,6 @@ class Agent:
         self._track_timesteps = collections.deque(maxlen=100)
         self._cumulative_rewards = None
         self._cumulative_timesteps = None
-
-        self.training = True
 
         # checkpoint
         self.checkpoint_modules = {}
@@ -87,16 +78,13 @@ class Agent:
         if not directory:
             directory = os.path.join(os.getcwd(), "runs")
         if not experiment_name:
-            experiment_name = "{}_{}".format(
-                datetime.datetime.now().strftime("%y-%m-%d_%H-%M-%S-%f"), self.__class__.__name__
-            )
+            experiment_name = f"{datetime.datetime.now().strftime('%y-%m-%d_%H-%M-%S-%f')}_{self.__class__.__name__}"
         self.experiment_dir = os.path.join(directory, experiment_name)
 
     def __str__(self) -> str:
-        """Generate a representation of the agent as string
+        """Generate a string representation of the agent.
 
-        :return: Representation of the agent as string
-        :rtype: str
+        :return: String representation.
         """
         string = f"Agent: {repr(self)}"
         for k, v in self.cfg.items():
@@ -109,39 +97,34 @@ class Agent:
         return string
 
     def _empty_preprocessor(self, _input: Any, *args, **kwargs) -> Any:
-        """Empty preprocess method
+        """Empty preprocess method.
 
-        This method is defined because PyTorch multiprocessing can't pickle lambdas
+        :param _input: Input to preprocess.
 
-        :param _input: Input to preprocess
-        :type _input: Any
-
-        :return: Preprocessed input
-        :rtype: Any
+        :return: Preprocessed input.
         """
         return _input
 
     def _get_internal_value(self, _module: Any) -> Any:
-        """Get internal module/variable state/value
+        """Get internal module/variable state/value.
 
-        :param _module: Module or variable
-        :type _module: Any
+        :param _module: Module or variable.
 
-        :return: Module/variable state/value
-        :rtype: Any
+        :return: Module/variable state/value.
         """
         return _module.state_dict.params if hasattr(_module, "state_dict") else _module
 
-    def init(self, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
-        """Initialize the agent
+    def init(self, *, trainer_cfg: Optional[Mapping[str, Any]] = None) -> None:
+        """Initialize the agent.
 
-        This method should be called before the agent is used.
-        It will initialize the TensorBoard writer (and optionally Weights & Biases) and create the checkpoints directory
+        .. warning::
 
-        :param trainer_cfg: Trainer configuration
-        :type trainer_cfg: dict, optional
+            This method must be called before the agent is used.
+            It will initialize the TensorBoard writer (and optionally Weights & Biases) and create the checkpoints directory.
+
+        :param trainer_cfg: Trainer configuration.
         """
-        trainer_cfg = trainer_cfg if trainer_cfg is not None else {}
+        trainer_cfg = {} if trainer_cfg is None else trainer_cfg
 
         # update agent configuration to avoid duplicated logging/checking in distributed runs
         if config.jax.is_distributed and config.jax.rank:
@@ -172,96 +155,55 @@ class Agent:
         if self.write_interval == "auto":
             self.write_interval = int(trainer_cfg.get("timesteps", 0) / 100)
         if self.write_interval > 0:
-            self.writer = None
-            # tensorboard via torch SummaryWriter
-            try:
-                from torch.utils.tensorboard import SummaryWriter
+            self.writer = SummaryWriter(log_dir=self.experiment_dir)
 
-                self.writer = SummaryWriter(log_dir=self.experiment_dir)
-            except ImportError as e:
-                pass
-            # tensorboard via tensorflow
-            if self.writer is None:
-                try:
-                    import tensorflow
-
-                    class _SummaryWriter:
-                        def __init__(self, log_dir):
-                            self.writer = tensorflow.summary.create_file_writer(logdir=log_dir)
-
-                        def add_scalar(self, tag, value, step):
-                            with self.writer.as_default():
-                                tensorflow.summary.scalar(tag, value, step=step)
-
-                    self.writer = _SummaryWriter(log_dir=self.experiment_dir)
-                except ImportError as e:
-                    pass
-            # tensorboard via tensorboardX
-            if self.writer is None:
-                try:
-                    import tensorboardX
-
-                    self.writer = tensorboardX.SummaryWriter(log_dir=self.experiment_dir)
-                except ImportError as e:
-                    pass
-            # show warnings and exit
-            if self.writer is None:
-                logger.warning("No package found to write events to Tensorboard.")
-                logger.warning("Set agent's `write_interval` setting to 0 to disable writing")
-                logger.warning("or install one of the following packages:")
-                logger.warning("  - PyTorch: https://pytorch.org/get-started/locally")
-                logger.warning("  - TensorFlow: https://www.tensorflow.org/install")
-                logger.warning("  - TensorboardX: https://github.com/lanpa/tensorboardX#install")
-                logger.warning("The current running process will be terminated.")
-                exit()
-
+        # checkpoint directory creation
         if self.checkpoint_interval == "auto":
             self.checkpoint_interval = int(trainer_cfg.get("timesteps", 0) / 10)
         if self.checkpoint_interval > 0:
             os.makedirs(os.path.join(self.experiment_dir, "checkpoints"), exist_ok=True)
 
     def track_data(self, tag: str, value: float) -> None:
-        """Track data to TensorBoard
+        """Track data to TensorBoard.
 
-        Currently only scalar data are supported
+        .. note::
 
-        :param tag: Data identifier (e.g. 'Loss / policy loss')
-        :type tag: str
-        :param value: Value to track
-        :type value: float
+            Currently only scalar data is supported.
+
+        :param tag: Data identifier (e.g. 'Loss/Policy loss').
+        :param value: Value to track.
         """
         self.tracking_data[tag].append(value)
 
-    def write_tracking_data(self, timestep: int, timesteps: int) -> None:
-        """Write tracking data to TensorBoard
+    def write_tracking_data(self, *, timestep: int, timesteps: int) -> None:
+        """Write tracking data to TensorBoard.
 
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
+        :param timestep: Current timestep.
+        :param timesteps: Number of timesteps.
         """
         for k, v in self.tracking_data.items():
             if k.endswith("(min)"):
-                self.writer.add_scalar(k, np.min(v), timestep)
+                self.writer.add_scalar(tag=k, value=np.min(v), timestep=timestep)
             elif k.endswith("(max)"):
-                self.writer.add_scalar(k, np.max(v), timestep)
+                self.writer.add_scalar(tag=k, value=np.max(v), timestep=timestep)
             else:
-                self.writer.add_scalar(k, np.mean(v), timestep)
-        # reset data containers for next iteration
+                self.writer.add_scalar(tag=k, value=np.mean(v), timestep=timestep)
+        # reset data containers
         self._track_rewards.clear()
         self._track_timesteps.clear()
         self.tracking_data.clear()
 
-    def write_checkpoint(self, timestep: int, timesteps: int) -> None:
-        """Write checkpoint (modules) to disk
+    def write_checkpoint(self, *, timestep: int, timesteps: int) -> None:
+        """Write checkpoint (modules) to persistent storage.
 
-        The checkpoints are saved in the directory 'checkpoints' in the experiment directory.
-        The name of the checkpoint is the current timestep if timestep is not None, otherwise it is the current time.
+        .. note::
 
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
+            The checkpoints are stored in the subdirectory ``checkpoints`` within the experiment directory.
+            The checkpoint name is the ``timestep`` argument value (if it is not ``None``),
+            or the current system date-time otherwise.
+
+        :param timestep: Current timestep.
+        :param timesteps: Number of timesteps.
         """
         tag = str(timestep if timestep is not None else datetime.datetime.now().strftime("%y-%m-%d_%H-%M-%S-%f"))
         # separated modules
@@ -271,10 +213,10 @@ class Agent:
                     pickle.dump(flax.serialization.to_bytes(self._get_internal_value(module)), file, protocol=4)
         # whole agent
         else:
-            modules = {}
-            for name, module in self.checkpoint_modules.items():
-                modules[name] = flax.serialization.to_bytes(self._get_internal_value(module))
-
+            modules = {
+                name: flax.serialization.to_bytes(self._get_internal_value(module))
+                for name, module in self.checkpoint_modules.items()
+            }
             with open(os.path.join(self.experiment_dir, "checkpoints", f"agent_{tag}.pickle"), "wb") as file:
                 pickle.dump(modules, file, protocol=4)
 
@@ -282,42 +224,50 @@ class Agent:
         if self.checkpoint_best_modules["modules"] and not self.checkpoint_best_modules["saved"]:
             # separated modules
             if self.checkpoint_store_separately:
-                for name, module in self.checkpoint_modules.items():
+                for name in self.checkpoint_modules:
                     with open(os.path.join(self.experiment_dir, "checkpoints", f"best_{name}.pickle"), "wb") as file:
                         pickle.dump(
                             flax.serialization.to_bytes(self.checkpoint_best_modules["modules"][name]), file, protocol=4
                         )
             # whole agent
             else:
-                modules = {}
-                for name, module in self.checkpoint_modules.items():
-                    modules[name] = flax.serialization.to_bytes(self.checkpoint_best_modules["modules"][name])
+                modules = {
+                    name: flax.serialization.to_bytes(self.checkpoint_best_modules["modules"][name])
+                    for name in self.checkpoint_modules
+                }
                 with open(os.path.join(self.experiment_dir, "checkpoints", "best_agent.pickle"), "wb") as file:
                     pickle.dump(modules, file, protocol=4)
             self.checkpoint_best_modules["saved"] = True
 
-    def act(self, states: Union[np.ndarray, jax.Array], timestep: int, timesteps: int) -> Union[np.ndarray, jax.Array]:
-        """Process the environment's states to make a decision (actions) using the main policy
+    @abstractmethod
+    def act(
+        self,
+        observations: Union[np.ndarray, jax.Array],
+        states: Union[np.ndarray, jax.Array, None],
+        *,
+        timestep: int,
+        timesteps: int,
+    ) -> Tuple[Union[np.ndarray, jax.Array], Mapping[str, Union[np.ndarray, jax.Array, Any]]]:
+        """Process the environment's observations/states to make a decision (actions) using the main policy.
 
-        :param states: Environment's states
-        :type states: np.ndarray or jax.Array
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
+        :param observations: Environment observations.
+        :param states: Environment states.
+        :param timestep: Current timestep.
+        :param timesteps: Number of timesteps.
 
-        :raises NotImplementedError: The method is not implemented by the inheriting classes
-
-        :return: Actions
-        :rtype: np.ndarray or jax.Array
+        :return: Agent output. The first component is the expected action/value returned by the agent.
+            The second component is a dictionary containing extra output values according to the model.
         """
-        raise NotImplementedError
+        pass
 
     def record_transition(
         self,
+        *,
+        observations: Union[np.ndarray, jax.Array],
         states: Union[np.ndarray, jax.Array],
         actions: Union[np.ndarray, jax.Array],
         rewards: Union[np.ndarray, jax.Array],
+        next_observations: Union[np.ndarray, jax.Array],
         next_states: Union[np.ndarray, jax.Array],
         terminated: Union[np.ndarray, jax.Array],
         truncated: Union[np.ndarray, jax.Array],
@@ -325,29 +275,25 @@ class Agent:
         timestep: int,
         timesteps: int,
     ) -> None:
-        """Record an environment transition in memory (to be implemented by the inheriting classes)
+        """Record an environment transition in memory.
 
-        Inheriting classes must call this method to record episode information (rewards, timesteps, etc.).
-        In addition to recording environment transition (such as states, rewards, etc.), agent information can be recorded.
+        .. note::
 
-        :param states: Observations/states of the environment used to make the decision
-        :type states: np.ndarray or jax.Array
-        :param actions: Actions taken by the agent
-        :type actions: np.ndarray or jax.Array
-        :param rewards: Instant rewards achieved by the current actions
-        :type rewards: np.ndarray or jax.Array
-        :param next_states: Next observations/states of the environment
-        :type next_states: np.ndarray or jax.Array
-        :param terminated: Signals to indicate that episodes have terminated
-        :type terminated: np.ndarray or jax.Array
-        :param truncated: Signals to indicate that episodes have been truncated
-        :type truncated: np.ndarray or jax.Array
-        :param infos: Additional information about the environment
-        :type infos: Any type supported by the environment
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
+            This method keeps track of the episode rewards (instantaneous and cumulative) and timesteps
+            when ``experiment.write_interval`` configuration is resolved to a positive value.
+            Inheriting classes must call this method to record such information.
+
+        :param observations: Environment observations.
+        :param states: Environment states.
+        :param actions: Actions taken by the agent.
+        :param rewards: Instant rewards achieved by the current actions.
+        :param next_observations: Next environment observations.
+        :param next_states: Next environment states.
+        :param terminated: Signals that indicate episodes have terminated.
+        :param truncated: Signals that indicate episodes have been truncated.
+        :param infos: Additional information about the environment.
+        :param timestep: Current timestep.
+        :param timesteps: Number of timesteps.
         """
         if self.write_interval > 0:
             # compute the cumulative sum of the rewards and timesteps
@@ -393,32 +339,31 @@ class Agent:
                 self.tracking_data["Episode / Total timesteps (min)"].append(np.min(track_timesteps))
                 self.tracking_data["Episode / Total timesteps (mean)"].append(np.mean(track_timesteps))
 
-    def set_mode(self, mode: str) -> None:
-        """Set the model mode (training or evaluation)
+    def enable_training_mode(self, enabled: bool = True, *, apply_to_models: bool = False) -> None:
+        """Set the training mode of the agent: enabled (training) or disabled (evaluation).
 
-        :param mode: Mode: 'train' for training or 'eval' for evaluation
-        :type mode: str
+        The training mode can be queried by the ``training`` property.
+
+        :param enabled: True to enable the training mode, False to enable the evaluation mode.
+        :param apply_to_models: Whether to apply the training mode to all the agent's models.
+        """
+        self.training = enabled
+        if apply_to_models:
+            self.enable_models_training_mode(enabled)
+
+    def enable_models_training_mode(self, enabled: bool = True) -> None:
+        """Set the training mode of all the agent's models: enabled (training) or disabled (evaluation).
+
+        :param enabled: True to enable the training mode, False to enable the evaluation mode.
         """
         for model in self.models.values():
             if model is not None:
-                model.set_mode(mode)
-
-    def set_running_mode(self, mode: str) -> None:
-        """Set the current running mode (training or evaluation)
-
-        This method sets the value of the ``training`` property (boolean).
-        This property can be used to know if the agent is running in training or evaluation mode.
-
-        :param mode: Mode: 'train' for training or 'eval' for evaluation
-        :type mode: str
-        """
-        self.training = mode == "train"
+                model.enable_training_mode(enabled)
 
     def save(self, path: str) -> None:
-        """Save the agent to the specified path
+        """Save the agent to the specified path.
 
-        :param path: Path to save the model to
-        :type path: str
+        :param path: Path to save the agent to.
         """
         modules = {}
         for name, module in self.checkpoint_modules.items():
@@ -430,10 +375,9 @@ class Agent:
             pickle.dump(modules, file, protocol=4)
 
     def load(self, path: str) -> None:
-        """Load the model from the specified path
+        """Load the agent from the specified path.
 
-        :param path: Path to load the model from
-        :type path: str
+        :param path: Path to load the agent from.
         """
         with open(path, "rb") as file:
             modules = pickle.load(file)
@@ -447,38 +391,23 @@ class Agent:
                     else:
                         pass  # TODO: raise NotImplementedError
                 else:
-                    logger.warning(f"Cannot load the {name} module. The agent doesn't have such an instance")
+                    logger.warning(f"Skipping module '{name}'. The agent doesn't have such an instance")
 
-    def migrate(
-        self,
-        path: str,
-        name_map: Mapping[str, Mapping[str, str]] = {},
-        auto_mapping: bool = True,
-        verbose: bool = False,
-    ) -> bool:
-        """Migrate the specified external checkpoint to the current agent
+    @abstractmethod
+    def pre_interaction(self, *, timestep: int, timesteps: int) -> None:
+        """Method called before the interaction with the environment.
 
-        :raises NotImplementedError: Not yet implemented
-        """
-        raise NotImplementedError
-
-    def pre_interaction(self, timestep: int, timesteps: int) -> None:
-        """Callback called before the interaction with the environment
-
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
+        :param timestep: Current timestep.
+        :param timesteps: Number of timesteps.
         """
         pass
 
-    def post_interaction(self, timestep: int, timesteps: int) -> None:
-        """Callback called after the interaction with the environment
+    @abstractmethod
+    def post_interaction(self, *, timestep: int, timesteps: int) -> None:
+        """Method called after the interaction with the environment.
 
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
+        :param timestep: Current timestep.
+        :param timesteps: Number of timesteps.
         """
         timestep += 1
 
@@ -495,20 +424,22 @@ class Agent:
                         k: copy.deepcopy(self._get_internal_value(v)) for k, v in self.checkpoint_modules.items()
                     }
             # write checkpoints
-            self.write_checkpoint(timestep, timesteps)
+            self.write_checkpoint(timestep=timestep, timesteps=timesteps)
 
         # write to tensorboard
         if timestep > 1 and self.write_interval > 0 and not timestep % self.write_interval:
-            self.write_tracking_data(timestep, timesteps)
+            self.write_tracking_data(timestep=timestep, timesteps=timesteps)
 
-    def _update(self, timestep: int, timesteps: int) -> None:
-        """Algorithm's main update step
+    @abstractmethod
+    def update(self, *, timestep: int, timesteps: int) -> None:
+        """Algorithm's main update step.
 
-        :param timestep: Current timestep
-        :type timestep: int
-        :param timesteps: Number of timesteps
-        :type timesteps: int
+        .. warning::
 
-        :raises NotImplementedError: The method is not implemented by the inheriting classes
+            This method should not be called directly, but rather by the agent itself
+            when the algorithm is needed for learning.
+
+        :param timestep: Current timestep.
+        :param timesteps: Number of timesteps.
         """
-        raise NotImplementedError
+        pass

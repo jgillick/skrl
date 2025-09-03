@@ -2,6 +2,21 @@
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
 
+## [2.0.0] - unreleased
+### Added
+- Add `compute_space_limits` space utility to get Gymnasium spaces' limits
+- Add `ScopedTimer` utils to measure code execution time
+- Add `SummaryWriter` implementation to log data to TensorBoard without relying on third-party libraries
+- Log agent inference and algorithm update, and environment steeping time to TensorBoard
+
+### Changed (breaking changes)
+- Refactor the library to differentiate between environment observations and states (also known as privileged observation)
+- Update tabular model and algorithms to operate in any number of parallel environments
+
+### Removed
+- Remove checkpoints/models migration support from other RL libraries
+- Remove Isaac Gym (web viewer, inverse kinematic) and Omniverse Isaac Gym (local environment instance, inverse kinematic) utils
+
 ## [1.4.3] - 2025-03-29
 ### Changed
 - Update the GitHub Actions workflows for testing and coverage

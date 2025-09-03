@@ -10,10 +10,8 @@ Utils and configurations
     Model instantiators <utils/model_instantiators>
     Runner <utils/runner>
     Distributed runs <utils/distributed>
-    Memory and Tensorboard file post-processing <utils/postprocessing>
+    Memory and TensorBoard file post-processing <utils/postprocessing>
     Hugging Face integration <utils/huggingface>
-    Isaac Gym utils <utils/isaacgym_utils>
-    Omniverse Isaac Gym utils <utils/omniverse_isaacgym_utils>
 
 A set of utilities and configurations for managing an RL setup is provided as part of the library.
 
@@ -52,15 +50,9 @@ A set of utilities and configurations for managing an RL setup is provided as pa
     * - :doc:`Distributed runs <utils/distributed>`
       - .. centered:: :math:`\blacksquare`
       - .. centered:: :math:`\blacksquare`
-    * - Memory and Tensorboard :doc:`file post-processing <utils/postprocessing>`
+    * - Memory and TensorBoard :doc:`file post-processing <utils/postprocessing>`
       - .. centered:: :math:`\blacksquare`
       - .. centered:: :math:`\blacksquare`
     * - :doc:`Hugging Face integration <utils/huggingface>`
-      - .. centered:: :math:`\blacksquare`
-      - .. centered:: :math:`\blacksquare`
-    * - :doc:`Isaac Gym utils <utils/isaacgym_utils>`
-      - .. centered:: :math:`\blacksquare`
-      - .. centered:: :math:`\blacksquare`
-    * - :doc:`Omniverse Isaac Gym utils <utils/omniverse_isaacgym_utils>`
       - .. centered:: :math:`\blacksquare`
       - .. centered:: :math:`\blacksquare`

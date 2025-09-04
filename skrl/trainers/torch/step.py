@@ -148,8 +148,10 @@ class StepTrainer(Trainer):
             if self.environment_info in infos:
                 for k, v in infos[self.environment_info].items():
                     if isinstance(v, torch.Tensor) and v.numel() == 1:
+                        if "/" not in k:
+                            k = f"Info / {k}"
                         for agent in self.agents:
-                            agent.track_data(f"Info / {k}", v.item())
+                            agent.track_data(k, v.item())
 
         # post-interaction
         for agent in self.agents:
@@ -249,8 +251,10 @@ class StepTrainer(Trainer):
             if self.environment_info in infos:
                 for k, v in infos[self.environment_info].items():
                     if isinstance(v, torch.Tensor) and v.numel() == 1:
+                        if "/" not in k:
+                            k = f"Info / {k}"
                         for agent in self.agents:
-                            agent.track_data(f"Info / {k}", v.item())
+                            agent.track_data(k, v.item())
 
         # post-interaction
         for agent in self.agents:

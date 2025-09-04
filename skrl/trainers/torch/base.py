@@ -216,7 +216,9 @@ class Trainer:
                 if self.environment_info in infos:
                     for k, v in infos[self.environment_info].items():
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
-                            self.agents.track_data(f"Info / {k}", v.item())
+                            if "/" not in k:
+                                k = f"Info / {k}"
+                            self.agents.track_data(k, v.item())
 
             # post-interaction
             self.agents.post_interaction(timestep=timestep, timesteps=self.timesteps)
@@ -283,7 +285,9 @@ class Trainer:
                 if self.environment_info in infos:
                     for k, v in infos[self.environment_info].items():
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
-                            self.agents.track_data(f"Info / {k}", v.item())
+                            if "/" not in k:
+                                k = f"Info / {k}"
+                            self.agents.track_data(k, v.item())
 
             # post-interaction
             super(type(self.agents), self.agents).post_interaction(timestep=timestep, timesteps=self.timesteps)
@@ -356,7 +360,9 @@ class Trainer:
                 if self.environment_info in infos:
                     for k, v in infos[self.environment_info].items():
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
-                            self.agents.track_data(f"Info / {k}", v.item())
+                            if "/" not in k:
+                                k = f"Info / {k}"
+                            self.agents.track_data(k, v.item())
 
             # post-interaction
             self.agents.post_interaction(timestep=timestep, timesteps=self.timesteps)
@@ -430,7 +436,9 @@ class Trainer:
                 if self.environment_info in infos:
                     for k, v in infos[self.environment_info].items():
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
-                            self.agents.track_data(f"Info / {k}", v.item())
+                            if "/" not in k:
+                                k = f"Info / {k}"
+                            self.agents.track_data(k, v.item())
 
             # post-interaction
             super(type(self.agents), self.agents).post_interaction(timestep=timestep, timesteps=self.timesteps)

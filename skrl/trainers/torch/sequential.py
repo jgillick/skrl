@@ -133,7 +133,6 @@ class SequentialTrainer(Trainer):
                 # log environment info
                 if self.environment_info in infos:
                     for k, v in infos[self.environment_info].items():
-                        print(k, v)
                         if isinstance(v, torch.Tensor) and v.numel() == 1:
                             if "/" not in k:
                                 k = f"Info / {k}"
